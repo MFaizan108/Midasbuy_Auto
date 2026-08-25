@@ -1,4 +1,4 @@
-export const API='http://127.0.0.1:8000/api';
+export const API='/api';
 export async function j(path:string, init?:RequestInit){const r=await fetch(API+path,{headers:{'Content-Type':'application/json'},...init}); if(!r.ok) throw new Error(await r.text()); return r.json()}
 export const api={j,accounts:()=>j('/accounts'), addAccount:(display_name:string)=>j('/accounts',{method:'POST',body:JSON.stringify({display_name})}), login:(id:number)=>j(`/accounts/${id}/login`,{method:'POST'}), test:(id:number)=>j(`/accounts/${id}/test-session`,{method:'POST'}), visibleRun:(link:string,account_ids:number[])=>j('/tasks/visible-run',{method:'POST',body:JSON.stringify({link,account_ids})}), directRun:(link:string,account_ids:number[])=>j('/tasks/direct-run',{method:'POST',body:JSON.stringify({link,account_ids})}), createTask:(link:string,account_ids:number[])=>j('/tasks',{method:'POST',body:JSON.stringify({link,account_ids})}), tasks:()=>j('/tasks'), task:(id:string)=>j('/tasks/'+id), health:()=>j('/health'), logs:()=>j('/logs'), settings:()=>j('/settings'), putSettings:(body:any)=>j('/settings',{method:'PUT',body:JSON.stringify(body)})};
 export {j as jAPI};
