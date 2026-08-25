@@ -99,8 +99,19 @@ function Dashboard() {
   const [events, setEvents] = useState<any[]>([]);
   const [selectionMode, setSelectionMode] = useState(false);
 
+  const [serverTasks, setServerTasks] = useState<any[]>([]);
+
   useEffect(() => {
     api.accounts().then(setAcc);
+  }, []);
+
+  // refresh server tasks periodically so dashboard can show running tasks
+  useEffect(() => {
+    let mounted = true;
+    const load = () => api.tasks().then((t:any)=>{ if(mounted) setServerTasks(t) }).catch(()=>{});
+    load();
+    const id = setInterval(load, 5000);
+    return ()=>{ mounted=false; clearInterval(id); }
   }, []);
 
   const ready = acc.filter(
@@ -118,10 +129,43 @@ function Dashboard() {
     );
   }
 
+  const [visibleMode, setVisibleMode] = useState(false);
+  const [directMode, setDirectMode] = useState(true); // open link directly in profiles concurrently
+
   async function run() {
+    setEvents([]);
+    if (directMode) {
+      // Use normal task queue so batch progress events are emitted and displayed
+      try {
+        const t = await api.createTask(link, sel);
+        setTask(t);
+        setEvents([]);
+        const es = new EventSource(`${API}/tasks/${t.id}/events`);
+        es.onmessage = (e:any) => setEvents((x) => [JSON.parse(e.data), ...x].slice(0, 100));
+      } catch (err:any) {
+        alert('Failed to start task: ' + (err.message || JSON.stringify(err)));
+      }
+      return;
+    }
+
+    if (visibleMode) {
+      // run immediately in visible Chrome for observation (serial)
+      try {
+        const res = await api.visibleRun(link, sel);
+        setTask(null);
+        // show results as events
+        if (res && res.results) {
+          setEvents(res.results.map((r:any)=>({type:'visible-result', ...r})));
+        }
+      } catch (err:any) {
+        // Surface error to user so it's clear why nothing happened
+        alert('Visible run failed: ' + (err.message || JSON.stringify(err)));
+      }
+      return;
+    }
+
     const t = await api.createTask(link, sel);
     setTask(t);
-    setEvents([]);
 
     const es = new EventSource(`${API}/tasks/${t.id}/events`);
 
@@ -136,7 +180,7 @@ function Dashboard() {
       <div className="stats">
         <Card k="Total Accounts" v={acc.length} />
         <Card k="Ready Accounts" v={ready.length} />
-        <Card k="Running Tasks" v={task ? 1 : 0} />
+        <Card k="Running Tasks" v={Math.max(serverTasks.filter((x:any)=>['QUEUED','RUNNING','PAUSED'].includes(x.status)).length, task ? 1 : 0)} />
         <Card
           k="Success Rate"
           v={
@@ -192,7 +236,13 @@ function Dashboard() {
           </button>
           <button onClick={() => setSelectionMode(true)}>Select Accounts</button>
           <button onClick={() => setSel([])}>Clear</button>
-          <b>{sel.length} accounts selected</b>
+          <label style={{ marginLeft: 12 }}>
+            <input type="checkbox" checked={visibleMode} onChange={(e)=>setVisibleMode(e.target.checked)} /> Show browser while running
+          </label>
+          <label style={{ marginLeft: 12 }}>
+            <input type="checkbox" checked={directMode} onChange={(e)=>setDirectMode(e.target.checked)} /> Open link directly in profiles (parallel)
+          </label>
+          <b style={{ marginLeft: 12 }}>{sel.length} accounts selected</b>
         </div>
 
         <button className="cta" onClick={run} disabled={!link || !sel.length}>
@@ -348,7 +398,11 @@ function Tasks() {
   const [t, setT] = useState<any[]>([]);
 
   useEffect(() => {
-    api.tasks().then(setT);
+    let mounted = true;
+    const load = () => api.tasks().then((x:any)=>{ if(mounted) setT(x) }).catch(()=>{});
+    load();
+    const id = setInterval(load, 5000);
+    return ()=>{ mounted=false; clearInterval(id); };
   }, []);
 
   const activeTasks = t.filter((x) =>
@@ -394,6 +448,39 @@ function Tasks() {
           </div>
         </>
       )}
+    </>
+  );
+}
+
+// History page: show completed tasks (separate from Tasks view)
+function HistoryPage() {
+  const [t, setT] = useState<any[]>([]);
+
+  useEffect(() => {
+    let mounted = true;
+    const load = () => api.tasks().then((x:any)=>{ if(mounted) setT(x) }).catch(()=>{});
+    load();
+    const id = setInterval(load, 5000);
+    return ()=>{ mounted=false; clearInterval(id); };
+  }, []);
+
+  const completed = t.filter((x) => ['COMPLETED','FAILED','CANCELLED'].includes(x.status));
+
+  return (
+    <>
+      <Header title="History" sub="Completed tasks" />
+      <div className="table">
+        {completed.map((x) => (
+          <Link key={x.id} className="tr" to={'/tasks/' + x.id}>
+            <b>Task #{x.id}</b>
+            <span>{x.link}</span>
+            <Badge s={x.status} />
+            <span>
+              {x.success_count}/{x.total_count} success
+            </span>
+          </Link>
+        ))}
+      </div>
     </>
   );
 }
@@ -556,14 +643,19 @@ function SettingsPage() {
   };
 
   useEffect(() => {
-    api.settings().then((cfg) => {
-      setS(cfg);
-      setDraft(cfg);
-    });
+    let mounted = true;
+    const load = () => api.settings().then((cfg:any) => { if(mounted){ setS(cfg); setDraft(cfg); } }).catch(()=>{});
+    load();
+    const id = setInterval(load, 5000);
+    return ()=>{ mounted=false; clearInterval(id); };
   }, []);
 
   useEffect(() => {
-    api.accounts().then(setAccounts);
+    let mounted = true;
+    const loadA = () => api.accounts().then((a:any)=>{ if(mounted) setAccounts(a)}).catch(()=>{});
+    loadA();
+    const id2 = setInterval(loadA, 5000);
+    return ()=>{ mounted=false; clearInterval(id2); };
   }, []);
 
   const handleDelete = async (id: number) => {
@@ -833,7 +925,7 @@ function App() {
           <Route path="/accounts" element={<Accounts />} />
           <Route path="/tasks" element={<Tasks />} />
           <Route path="/tasks/:id" element={<TaskDetail />} />
-          <Route path="/history" element={<Tasks />} />
+          <Route path="/history" element={<HistoryPage />} />
           <Route path="/logs" element={<Logs />} />
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>

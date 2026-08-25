@@ -90,6 +90,122 @@ async def create_task(body:TaskCreate, db:Session=Depends(get_db)):
         for account in ready:
             db.add(TaskLink(task_id=task.id,link=link,account_id=account.id))
     db.commit(); asyncio.create_task(queue.run_task(task.id)); return task
+
+
+@router.post('/tasks/visible-run')
+async def visible_run(body:dict, db:Session=Depends(get_db)):
+    """Run workflow immediately in visible Chrome for the provided accounts (for manual observation).
+    If a run succeeds, the visible browser will be closed automatically. If it fails, the browser will be left open for inspection.
+    This endpoint does not create a Task record and is meant for interactive debugging/observation.
+    """
+    link = body.get('link')
+    account_ids = body.get('account_ids') or []
+    if not link or not link.startswith(('http://','https://')):
+        raise HTTPException(400, 'Valid Midasbuy link required')
+    accounts = db.query(Account).filter(Account.id.in_(account_ids)).all()
+    if len(accounts) != len(account_ids):
+        raise HTTPException(400, 'Some accounts not found')
+
+    from app.browser.manager import AUTH_MARKER_WAIT_SECONDS
+    results = []
+    for acc in accounts:
+        if not acc.enabled or acc.status != 'READY' or not Path(acc.profile_path).is_dir():
+            results.append({'account_id': acc.id, 'status': 'ACCOUNT_NOT_READY'})
+            continue
+        profile = Path(acc.profile_path)
+        try:
+            # Open visible Chrome using the account profile
+            context = await browser_manager._open_chrome(acc, profile)
+            page = context.pages[0] if context.pages else None
+            if page is None:
+                results.append({'account_id': acc.id, 'status': 'BROWSER_ERROR', 'message': 'No page available'})
+                continue
+            # Verify authentication
+            authenticated = await browser_manager._looks_authenticated(page, wait_seconds=AUTH_MARKER_WAIT_SECONDS)
+            if not authenticated:
+                # leave browser open for manual inspection
+                await browser_manager._capture_failure_snapshot(page, suffix=f'visible-manual-account-{acc.id}')
+                results.append({'account_id': acc.id, 'status': 'NOT_AUTHENTICATED'})
+                continue
+            # Run workflow (visible)
+            from app.automation.workflow import workflow
+            try:
+                res = await asyncio.wait_for(workflow.run(acc, link, lambda s: None, page=page), timeout=settings.timeout_seconds + 5)
+            except Exception as e:
+                res = {'status': 'BROWSER_ERROR', 'error': str(e)}
+            ok = res.get('status') == 'SUCCESS'
+            if ok:
+                # close visible browser automatically on success
+                await browser_manager.release_task_page(acc.id, True)
+                results.append({'account_id': acc.id, 'status': 'SUCCESS'})
+            else:
+                # keep browser open for debugging
+                results.append({'account_id': acc.id, 'status': res.get('status'), 'error': res.get('error')})
+        except Exception as e:
+            results.append({'account_id': acc.id, 'status': 'ERROR', 'error': str(e)})
+    return {'results': results}
+
+
+@router.post('/tasks/direct-run')
+async def direct_run(body:dict, db:Session=Depends(get_db)):
+    """Open the provided link in each selected account's profile concurrently (visible), run workflow with 90s timeout per account.
+    Do NOT re-verify authentication here — assumes accounts are already authenticated/READY.
+    Successful runs will close the browser; failed runs will keep browser open for inspection.
+    This endpoint returns per-account results immediately.
+    """
+    link = body.get('link')
+    account_ids = body.get('account_ids') or []
+    if not link or not link.startswith(('http://','https://')):
+        raise HTTPException(400, 'Valid Midasbuy link required')
+    accounts = db.query(Account).filter(Account.id.in_(account_ids)).all()
+    if len(accounts) != len(account_ids):
+        raise HTTPException(400, 'Some accounts not found')
+
+    from app.automation.workflow import workflow
+    RUN_TIMEOUT = 90
+    results = []
+
+    async def run_for(acc: Account):
+        if not acc.enabled or acc.status != 'READY' or not Path(acc.profile_path).is_dir():
+            return {'account_id': acc.id, 'status': 'ACCOUNT_NOT_READY'}
+        profile = Path(acc.profile_path)
+        try:
+            context = await browser_manager._open_chrome(acc, profile)
+            page = context.pages[0] if context.pages else None
+            if page is None:
+                return {'account_id': acc.id, 'status': 'BROWSER_ERROR', 'message': 'No page available'}
+            # navigate to link
+            try:
+                await page.goto(link, timeout=30000)
+            except Exception as e:
+                # navigation failed; keep browser open
+                await browser_manager._capture_failure_snapshot(page, suffix=f'directrun-nav-{acc.id}')
+                return {'account_id': acc.id, 'status': 'NAV_ERROR', 'error': str(e)}
+            # run workflow with enforced timeout
+            try:
+                res = await asyncio.wait_for(workflow.run(acc, link, lambda s: None, page=page), timeout=RUN_TIMEOUT)
+            except asyncio.TimeoutError:
+                # keep browser open for inspection
+                await browser_manager._capture_failure_snapshot(page, suffix=f'directrun-timeout-{acc.id}')
+                return {'account_id': acc.id, 'status': 'TIMEOUT'}
+            except Exception as e:
+                await browser_manager._capture_failure_snapshot(page, suffix=f'directrun-error-{acc.id}')
+                return {'account_id': acc.id, 'status': 'ERROR', 'error': str(e)}
+
+            ok = res.get('status') == 'SUCCESS'
+            if ok:
+                # close visible browser automatically on success
+                await browser_manager.release_task_page(acc.id, True)
+                return {'account_id': acc.id, 'status': 'SUCCESS'}
+            else:
+                # keep browser open for debugging
+                return {'account_id': acc.id, 'status': res.get('status'), 'error': res.get('error')}
+        except Exception as e:
+            return {'account_id': acc.id, 'status': 'ERROR', 'error': str(e)}
+
+    coros = [run_for(acc) for acc in accounts]
+    gathered = await asyncio.gather(*coros)
+    return {'results': gathered}
 @router.get('/tasks', response_model=list[TaskOut])
 def tasks(db:Session=Depends(get_db)): return db.query(Task).order_by(Task.id.desc()).all()
 @router.get('/tasks/{id}')
