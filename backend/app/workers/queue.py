@@ -13,7 +13,8 @@ class TaskQueue:
         if task is None: db.close(); return
         task.status='RUNNING'; task.started_at=datetime.utcnow(); db.commit()
         default_link=task.link
-        sem=asyncio.Semaphore(max(1,min(10,settings.concurrency)))
+        # Allow higher concurrency; clamp to reasonable upper bound (200)
+        sem=asyncio.Semaphore(max(1, min(200, settings.concurrency)))
         rows=[(row.id,row.account_id,TaskLink) for row in db.query(TaskLink).filter_by(task_id=task_id).all()]
         if not rows:
             rows=[(row.id,row.account_id,TaskAccount) for row in db.query(TaskAccount).filter_by(task_id=task_id).all()]

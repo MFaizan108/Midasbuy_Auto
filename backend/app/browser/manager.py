@@ -59,6 +59,8 @@ class BrowserManager:
         self._login_browsers: dict[int, Any] = {}
         self._chrome_processes: dict[int, subprocess.Popen] = {}
         self._login_monitors: dict[int, asyncio.Task] = {}
+        # confirmation events used to wait for manual user confirmation during visible fallback
+        self.confirm_events: dict[int, asyncio.Event] = {}
 
     async def _ensure_playwright(self):
         if self._playwright is None:
@@ -426,7 +428,31 @@ class BrowserManager:
                     else:
                         logger.warning("[AuthFallback] Visible Chrome fallback did not verify account=%s", account.id)
                         await self._capture_failure_snapshot(page_vis, suffix='visible-fallback')
-                        return page_vis, owned_vis, AuthCheckResult(False, "NOT_AUTHENTICATED", "RE_LOGIN_REQUIRED", "Midasbuy login was not verified (visible fallback).")
+
+                        # Wait for a manual confirmation from the user before giving up.
+                        VISIBLE_CONFIRM_TIMEOUT = 180  # seconds
+                        evt = self.confirm_events.setdefault(account.id, asyncio.Event())
+                        logger.info("[AuthFallback] Waiting up to %s seconds for manual confirmation for account=%s", VISIBLE_CONFIRM_TIMEOUT, account.id)
+                        try:
+                            try:
+                                await asyncio.wait_for(evt.wait(), timeout=VISIBLE_CONFIRM_TIMEOUT)
+                            except asyncio.TimeoutError:
+                                logger.warning("[AuthFallback] Manual confirmation timeout for account=%s", account.id)
+
+                            # After confirmation (or timeout), re-check authentication state
+                            rechecked = await self._looks_authenticated(page_vis, wait_seconds=AUTH_MARKER_WAIT_SECONDS)
+                            if rechecked:
+                                logger.info("[AuthFallback] Account %s verified after manual confirmation", account.id)
+                                return page_vis, owned_vis, AuthCheckResult(True, "READY", "CONNECTED", "Midasbuy session verified via visible fallback after manual confirmation.")
+                            else:
+                                logger.warning("[AuthFallback] Account %s still not verified after manual confirmation/timeout", account.id)
+                                return page_vis, owned_vis, AuthCheckResult(False, "NOT_AUTHENTICATED", "RE_LOGIN_REQUIRED", "Midasbuy login was not verified (visible fallback).")
+                        finally:
+                            # cleanup event so repeated waits behave correctly
+                            try:
+                                self.confirm_events.pop(account.id, None)
+                            except Exception:
+                                pass
                 except Exception as exc:
                     logger.exception("[AuthFallback] Visible fallback error for account=%s: %s", account.id, exc)
                     return page, owned, AuthCheckResult(False, "BROWSER_ERROR", "BROWSER_ERROR", f"Visible fallback failed: {exc}")

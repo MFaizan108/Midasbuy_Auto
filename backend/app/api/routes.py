@@ -48,6 +48,24 @@ async def test_session(id:int, db:Session=Depends(get_db)):
     acc.last_error=None if result.ready else result.message
     db.commit()
     return {'ready':result.ready,'status':result.status,'login_status':result.login_status,'message':result.message}
+
+
+@router.post('/accounts/{id}/confirm-login')
+async def confirm_login(id:int, db:Session=Depends(get_db)):
+    acc = db.get(Account, id)
+    if not acc:
+        raise HTTPException(404, 'Account not found')
+    # signal any existing confirmation waiter for this account
+    try:
+        evt = getattr(browser_manager, 'confirm_events', {}).get(acc.id)
+        if evt:
+            # set the asyncio.Event so the BrowserManager can proceed
+            evt.set()
+            return {'ok': True, 'message': 'confirmation signaled'}
+        else:
+            return {'ok': False, 'message': 'no pending confirmation for this account'}
+    except Exception as e:
+        raise HTTPException(500, str(e))
 @router.post('/accounts/{id}/discover-help-draw')
 async def discover_help_draw_route(id:int, db:Session=Depends(get_db)):
     acc=db.get(Account,id)
