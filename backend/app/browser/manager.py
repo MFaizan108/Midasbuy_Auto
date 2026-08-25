@@ -126,6 +126,7 @@ class BrowserManager:
         in the backend without opening visible Chrome windows.
         """
         playwright = await self._ensure_playwright()
+        context = None
         try:
             # launch_persistent_context expects a directory path for user_data_dir
             context = await playwright.chromium.launch_persistent_context(
@@ -140,7 +141,7 @@ class BrowserManager:
         except Exception:
             # Ensure any partial browser is closed in case of failure
             try:
-                if hasattr(context, 'browser') and context.browser:
+                if context is not None and hasattr(context, 'browser') and context.browser:
                     await context.browser.close()
             except Exception:
                 pass
@@ -386,7 +387,10 @@ class BrowserManager:
             page = await self.recover_existing_page(account)
         if page is None:
             try:
-                context = await self._open_chrome(account, profile)
+                if settings.headless:
+                    context = await self._open_persistent_context(account, profile, headless=True)
+                else:
+                    context = await self._open_chrome(account, profile)
                 page = context.pages[0] if context.pages else None
                 owned = page is not None
             except (FileNotFoundError, PermissionError, TimeoutError) as exc:
