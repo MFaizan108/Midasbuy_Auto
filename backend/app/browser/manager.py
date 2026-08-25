@@ -398,9 +398,42 @@ class BrowserManager:
 
         if page is None or page.is_closed():
             return None, owned, AuthCheckResult(False, "BROWSER_ERROR", "BROWSER_ERROR", "The account browser page is unavailable.")
+
         authenticated = await self._looks_authenticated(page, wait_seconds=AUTH_MARKER_WAIT_SECONDS)
+
         if not authenticated:
+            logger.info("[AuthFallback] Headless verification failed for account=%s; settings.headless=%s", account.id, settings.headless)
+
+            # If headless mode was used, try a visible Chrome fallback which allows
+            # the interactive login/verification to run in a visible browser.
+            if settings.headless:
+                logger.info("[AuthFallback] Attempting visible Chrome fallback for account=%s", account.id)
+                try:
+                    # Open visible Chrome using the same profile so the user can see
+                    # what is happening and (optionally) interact.
+                    context_vis = await self._open_chrome(account, profile)
+                    page_vis = context_vis.pages[0] if context_vis.pages else None
+                    owned_vis = page_vis is not None
+                    if page_vis is None:
+                        logger.warning("[AuthFallback] Visible Chrome opened but no page available for account=%s", account.id)
+                        return page, owned, AuthCheckResult(False, "BROWSER_ERROR", "BROWSER_ERROR", "Visible browser opened but no page available.")
+
+                    # Give visible page slightly longer to render and resolve client-side flows
+                    authenticated_vis = await self._looks_authenticated(page_vis, wait_seconds=AUTH_MARKER_WAIT_SECONDS + 20)
+                    if authenticated_vis:
+                        logger.info("[AuthFallback] Visible Chrome fallback verified account=%s", account.id)
+                        return page_vis, owned_vis, AuthCheckResult(True, "READY", "CONNECTED", "Midasbuy session verified via visible fallback.")
+                    else:
+                        logger.warning("[AuthFallback] Visible Chrome fallback did not verify account=%s", account.id)
+                        await self._capture_failure_snapshot(page_vis, suffix='visible-fallback')
+                        return page_vis, owned_vis, AuthCheckResult(False, "NOT_AUTHENTICATED", "RE_LOGIN_REQUIRED", "Midasbuy login was not verified (visible fallback).")
+                except Exception as exc:
+                    logger.exception("[AuthFallback] Visible fallback error for account=%s: %s", account.id, exc)
+                    return page, owned, AuthCheckResult(False, "BROWSER_ERROR", "BROWSER_ERROR", f"Visible fallback failed: {exc}")
+
+            # Non-headless or fallback not attempted/failed: return not authenticated
             return page, owned, AuthCheckResult(False, "NOT_AUTHENTICATED", "RE_LOGIN_REQUIRED", "Midasbuy login was not verified.")
+
         return page, owned, AuthCheckResult(True, "READY", "CONNECTED", "Midasbuy session verified successfully.")
 
     async def release_task_page(self, account_id: int, owned: bool) -> None:
