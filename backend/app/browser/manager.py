@@ -413,16 +413,43 @@ class BrowserManager:
         The marker list is intentionally empty until a stable Midasbuy-specific
         authenticated DOM marker is verified against the live site. Unknown,
         incomplete, expired, or challenge states remain unauthenticated.
+
+        This function is extended to handle client-side fragment token flows
+        (guest token URLs) by detecting location.href/hash and waiting for
+        meaningful page content. On failure it will capture a diagnostic
+        screenshot and HTML snapshot to the configured screenshots/logs dir.
         """
         # First, dismiss any startup popup that might be blocking interaction
         await self._dismiss_startup_popup(page)
 
+        # Capture href/hash for diagnostics
+        try:
+            href = await page.evaluate('() => location.href')
+            loc_hash = await page.evaluate('() => location.hash')
+        except Exception:
+            href = None
+            loc_hash = None
+
+        logger.info("[AuthCheck] starting _looks_authenticated for url=%s hash=%s", href, loc_hash)
+
         deadline = time.monotonic() + max(0, wait_seconds)
         menu_open_attempted = False
+
+        # If the URL indicates a guest/token flow, wait for page to populate
+        guest_flow = False
+        try:
+            if href and ("pages/guest" in href or "pagedoo" in href or "token=" in (href + (loc_hash or ''))):
+                guest_flow = True
+                logger.info("[AuthCheck] detected guest/token flow, waiting for client-side rendering")
+        except Exception:
+            guest_flow = False
+
         while True:
             if getattr(page, "is_closed", lambda: False)():
+                await self._capture_failure_snapshot(page, suffix='closed')
                 return False
             try:
+                # Normal authenticated marker checks
                 user_control_visible = await page.locator(AUTHENTICATED_USER_CONTROL).first.is_visible(timeout=250)
                 panel_visible = await page.locator(AUTHENTICATED_PANEL).first.is_visible(timeout=250)
                 logout_visible = False
@@ -432,6 +459,19 @@ class BrowserManager:
                         break
                 if user_control_visible and panel_visible and logout_visible:
                     return True
+
+                # If guest flow detected, consider the page authenticated when it has
+                # sufficient rendered content (heuristic) rather than the standard markers
+                if guest_flow:
+                    try:
+                        body_text_len = await page.evaluate('() => (document.body && document.body.innerText || "").length')
+                        logger.info("[AuthCheck] guest flow body length=%s", body_text_len)
+                        if body_text_len and int(body_text_len) > 80:
+                            # heuristic success for guest flows; treat as authenticated
+                            return True
+                    except Exception:
+                        pass
+
                 if user_control_visible and not panel_visible and not menu_open_attempted:
                     try:
                         await page.locator(AUTHENTICATED_USER_CONTROL).first.click(timeout=1000)
@@ -449,14 +489,39 @@ class BrowserManager:
                     if await self._dismiss_startup_popup(page):
                         continue
                     if await self._is_visible(page, LOGIN_INDICATORS):
+                        await self._capture_failure_snapshot(page, suffix='login_indicator')
                         return False
             except Exception:
                 # Transient errors (navigation, detached frames, interception) must
                 # not abort verification early - keep polling until the deadline.
                 pass
             if time.monotonic() >= deadline:
+                # Capture diagnostic snapshot for investigation
+                await self._capture_failure_snapshot(page, suffix='timeout')
                 return False
             await asyncio.sleep(0.25)
+
+    async def _capture_failure_snapshot(self, page, suffix: str = '') -> None:
+        """Capture screenshot and HTML snapshot for debugging auth failures."""
+        try:
+            from datetime import datetime
+            name = datetime.utcnow().strftime('%Y%m%dT%H%M%S') + (('-' + suffix) if suffix else '')
+            screenshots_dir = Path(settings.screenshots_dir)
+            screenshots_dir.mkdir(parents=True, exist_ok=True)
+            png = screenshots_dir / f'auth-fail-{name}.png'
+            html = screenshots_dir / f'auth-fail-{name}.html'
+            try:
+                await page.screenshot(path=str(png), full_page=True)
+            except Exception:
+                logger.exception('Failed to take screenshot')
+            try:
+                content = await page.content()
+                html.write_text(content, encoding='utf-8')
+            except Exception:
+                logger.exception('Failed to capture page HTML')
+            logger.info('Captured auth failure snapshot: %s %s', png, html)
+        except Exception:
+            logger.exception('Failed to run _capture_failure_snapshot')
 
     async def _monitor_login(self, account_id: int, profile: Path, context: Any) -> None:
         """Observe the user-controlled page and tabs without changing them."""

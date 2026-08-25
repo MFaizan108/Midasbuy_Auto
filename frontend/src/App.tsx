@@ -443,12 +443,21 @@ function TaskDetail() {
 
           <div className="task-accounts">
             <h4>Account Results</h4>
-
+ 
             {t.accounts?.map((acc: any) => (
               <div key={acc.account_id} className="account-row">
                 <span>Account {String(acc.account_id).padStart(3, '0')}</span>
                 <Badge s={acc.status} />
                 <span>{acc.error || ''}</span>
+              </div>
+            ))}
+
+            {/* Also show link-level rows if available (helps surface errors attached to link rows) */}
+            {t.links?.map((ln: any) => (
+              <div key={ln.link_id || ln.id} className="account-row" style={{ opacity: 0.9 }}>
+                <span>Account {String(ln.account_id).padStart(3, '0')} (link)</span>
+                <Badge s={ln.status} />
+                <span>{ln.error || ''} {ln.link || ''}</span>
               </div>
             ))}
           </div>
