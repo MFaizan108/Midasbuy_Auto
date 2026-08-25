@@ -1,0 +1,19 @@
+from sqlalchemy import String,Integer,Boolean,DateTime,Text,ForeignKey,Float
+from sqlalchemy.orm import Mapped,mapped_column,relationship
+from datetime import datetime, timezone
+from app.database.session import Base
+def now(): return datetime.now(timezone.utc).replace(tzinfo=None)
+class Account(Base):
+    __tablename__='accounts'; id:Mapped[int]=mapped_column(primary_key=True); display_name:Mapped[str]=mapped_column(String(120)); account_identifier:Mapped[str|None]=mapped_column(String(200)); profile_path:Mapped[str]=mapped_column(Text); status:Mapped[str]=mapped_column(String(40),default='NOT_AUTHENTICATED'); login_status:Mapped[str]=mapped_column(String(40),default='UNKNOWN'); created_at:Mapped[datetime]=mapped_column(DateTime,default=now); updated_at:Mapped[datetime]=mapped_column(DateTime,default=now,onupdate=now); last_used_at:Mapped[datetime|None]=mapped_column(DateTime); last_success_at:Mapped[datetime|None]=mapped_column(DateTime); last_error:Mapped[str|None]=mapped_column(Text); total_runs:Mapped[int]=mapped_column(Integer,default=0); successful_runs:Mapped[int]=mapped_column(Integer,default=0); failed_runs:Mapped[int]=mapped_column(Integer,default=0); enabled:Mapped[bool]=mapped_column(Boolean,default=True)
+class Task(Base):
+    __tablename__='tasks'; id:Mapped[int]=mapped_column(primary_key=True); link:Mapped[str]=mapped_column(Text); status:Mapped[str]=mapped_column(String(40),default='QUEUED'); created_at:Mapped[datetime]=mapped_column(DateTime,default=now); started_at:Mapped[datetime|None]=mapped_column(DateTime); completed_at:Mapped[datetime|None]=mapped_column(DateTime); progress:Mapped[float]=mapped_column(Float,default=0); success_count:Mapped[int]=mapped_column(Integer,default=0); failure_count:Mapped[int]=mapped_column(Integer,default=0); total_count:Mapped[int]=mapped_column(Integer,default=0); results=relationship('TaskAccount',cascade='all, delete-orphan')
+class TaskAccount(Base):
+    __tablename__='task_accounts'; id:Mapped[int]=mapped_column(primary_key=True); task_id:Mapped[int]=mapped_column(ForeignKey('tasks.id')); account_id:Mapped[int]=mapped_column(ForeignKey('accounts.id')); status:Mapped[str]=mapped_column(String(40),default='QUEUED'); current_step:Mapped[str|None]=mapped_column(String(120)); started_at:Mapped[datetime|None]=mapped_column(DateTime); completed_at:Mapped[datetime|None]=mapped_column(DateTime); retry_count:Mapped[int]=mapped_column(Integer,default=0); error:Mapped[str|None]=mapped_column(Text); screenshot_path:Mapped[str|None]=mapped_column(Text)
+class TaskLink(Base):
+    __tablename__='task_links'; id:Mapped[int]=mapped_column(primary_key=True); task_id:Mapped[int]=mapped_column(ForeignKey('tasks.id')); link:Mapped[str]=mapped_column(Text); account_id:Mapped[int]=mapped_column(ForeignKey('accounts.id')); status:Mapped[str]=mapped_column(String(40),default='QUEUED'); started_at:Mapped[datetime|None]=mapped_column(DateTime); completed_at:Mapped[datetime|None]=mapped_column(DateTime); error:Mapped[str|None]=mapped_column(Text)
+class AutomationLog(Base):
+    __tablename__='automation_logs'; id:Mapped[int]=mapped_column(primary_key=True); level:Mapped[str]=mapped_column(String(20)); message:Mapped[str]=mapped_column(Text); account_id:Mapped[int|None]=mapped_column(Integer); task_id:Mapped[int|None]=mapped_column(Integer); created_at:Mapped[datetime]=mapped_column(DateTime,default=now)
+class Setting(Base):
+    __tablename__='settings'; key:Mapped[str]=mapped_column(String(120),primary_key=True); value:Mapped[str]=mapped_column(Text)
+class WorkflowRun(Base):
+    __tablename__='workflow_runs'; id:Mapped[int]=mapped_column(primary_key=True); task_id:Mapped[int]=mapped_column(Integer); account_id:Mapped[int]=mapped_column(Integer); status:Mapped[str]=mapped_column(String(40)); detail:Mapped[str|None]=mapped_column(Text); created_at:Mapped[datetime]=mapped_column(DateTime,default=now)

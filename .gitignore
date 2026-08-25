@@ -1,0 +1,7 @@
+.venv/
+node_modules/
+data/database/*.sqlite3
+data/accounts/*/browser_profile/
+__pycache__/
+.pytest_cache/
+dist/
